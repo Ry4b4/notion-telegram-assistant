@@ -43,12 +43,22 @@ DONE_STATUSES = {"done", "completed", "выполнено", "готово"}
 notion = Client(auth=NOTION_TOKEN)
 _db_properties_cache: dict[str, Any] | None = None
 
+BUTTON_ADD = "📝 Добавить задачу"
+BUTTON_QUICK = "⚡ Быстрая задача"
+BUTTON_LIST = "📋 Показать задачи"
+BUTTON_GROUPS = "🗂 Показать группы"
+BUTTON_DONE = "✅ Отметить выполненной"
+BUTTON_REMIND = "⏰ Поставить напоминание"
+BUTTON_PLAN = "📆 План на дату"
+BUTTON_ASK = "💬 Задать вопрос"
+BUTTON_HIDE = "Скрыть кнопки"
+
 MENU_KEYBOARD = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("/start"), KeyboardButton("/list"), KeyboardButton("/groups")],
-        [KeyboardButton("/add"), KeyboardButton("/quick"), KeyboardButton("/done")],
-        [KeyboardButton("/remind"), KeyboardButton("/plan"), KeyboardButton("/ask")],
-        [KeyboardButton("Скрыть кнопки")],
+        [KeyboardButton("/start"), KeyboardButton(BUTTON_LIST), KeyboardButton(BUTTON_GROUPS)],
+        [KeyboardButton(BUTTON_ADD), KeyboardButton(BUTTON_QUICK), KeyboardButton(BUTTON_DONE)],
+        [KeyboardButton(BUTTON_REMIND), KeyboardButton(BUTTON_PLAN), KeyboardButton(BUTTON_ASK)],
+        [KeyboardButton(BUTTON_HIDE)],
     ],
     resize_keyboard=True,
 )
@@ -220,6 +230,10 @@ def _extract_json(text: str) -> dict[str, Any] | None:
 
 
 def _detect_intent(text: str) -> dict[str, Any]:
+    rules_intent = _detect_intent_rules(text)
+    if rules_intent:
+        return rules_intent
+
     parser_prompt = (
         "Ты анализируешь сообщение пользователя и возвращаешь только JSON без пояснений.\n"
         "Допустимые intent: add, quick, list, plan, groups, done, remind, chat.\n"
@@ -276,6 +290,63 @@ def _detect_intent(text: str) -> dict[str, Any]:
     return data
 
 
+def _detect_intent_rules(text: str) -> dict[str, Any] | None:
+    normalized = text.strip().lower()
+    if not normalized:
+        return None
+
+    if normalized in {
+        BUTTON_ADD.lower(),
+        BUTTON_QUICK.lower(),
+        BUTTON_LIST.lower(),
+        BUTTON_GROUPS.lower(),
+        BUTTON_DONE.lower(),
+        BUTTON_REMIND.lower(),
+        BUTTON_PLAN.lower(),
+        BUTTON_ASK.lower(),
+        BUTTON_HIDE.lower(),
+    }:
+        return {"intent": "chat", "confidence": 1.0, "chat_prompt": normalized}
+
+    if any(word in normalized for word in ["покажи группы", "какие группы", "список групп"]):
+        return {"intent": "groups", "confidence": 0.95}
+
+    if any(word in normalized for word in ["план на", "план завтра", "план сегодня"]):
+        plan_day = "today"
+        if "завтра" in normalized:
+            plan_day = "tomorrow"
+        return {"intent": "plan", "confidence": 0.9, "plan_day": plan_day}
+
+    if any(word in normalized for word in ["покажи задачи", "список задач", "какие задачи"]):
+        return {"intent": "list", "confidence": 0.9}
+
+    if any(word in normalized for word in ["отметь выполн", "выполнил", "закрой задачу", "сделано"]):
+        return {"intent": "done", "confidence": 0.9, "done_query": normalized}
+
+    remind_match = re.search(r"через\s+(\d+)\s*(мин|минут|час|часа|часов)", normalized)
+    if remind_match and any(word in normalized for word in ["напомни", "напомин", "напомнить"]):
+        minutes = int(remind_match.group(1))
+        unit = remind_match.group(2)
+        if unit.startswith("час"):
+            minutes *= 60
+        reminder_text = re.sub(r"напомни(ть)?", "", normalized).strip(" ,.-")
+        reminder_text = re.sub(r"через\s+\d+\s*(мин|минут|час|часа|часов)", "", reminder_text).strip(" ,.-")
+        if not reminder_text:
+            reminder_text = "напоминание"
+        return {"intent": "remind", "confidence": 0.95, "minutes": minutes, "reminder_text": reminder_text}
+
+    task_markers = ["нужно", "надо", "задача", "встреч", "созвон", "сделать", "добавь", "добавить"]
+    if any(marker in normalized for marker in task_markers):
+        return {
+            "intent": "quick",
+            "confidence": 0.85,
+            "task_text": text.strip(),
+            "due_date": "",
+            "priority": "",
+        }
+    return None
+
+
 def _is_affirmative(text: str) -> bool:
     normalized = text.strip().lower()
     return normalized in {"да", "ага", "ок", "окей", "yes", "y", "верно", "подтверждаю", "подтвердить"}
@@ -288,26 +359,25 @@ def _is_negative(text: str) -> bool:
 
 def _looks_like_internet_required(text: str) -> bool:
     normalized = text.strip().lower()
-    internet_markers = [
-        "сегодня",
-        "сейчас",
+    strong_markers = [
         "последние новости",
         "новости",
         "курс доллара",
         "курс биткоина",
         "погода",
         "пробки",
-        "что происходит",
-        "актуальн",
-        "за сегодня",
-        "на этой неделе",
+        "что происходит в мире",
         "в интернете",
         "найди в интернете",
-        "поищи",
         "поищи в сети",
         "загугли",
+        "свежие данные",
+        "актуальная информация",
     ]
-    return any(marker in normalized for marker in internet_markers)
+    task_markers = ["нужно", "надо", "задача", "встреч", "созвон", "добавь", "добавить", "напомни", "план"]
+    if any(marker in normalized for marker in task_markers):
+        return False
+    return any(marker in normalized for marker in strong_markers)
 
 
 def _normalize_task_text(text: str) -> str:
@@ -773,19 +843,25 @@ async def ask_ai(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def menu_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = (update.message.text or "").strip()
-    if text == "/add":
+    if text == BUTTON_LIST:
+        await list_tasks(update, context)
+        return
+    if text == BUTTON_GROUPS:
+        await groups(update, context)
+        return
+    if text in {"/add", BUTTON_ADD}:
         await update.message.reply_text("Шаблон: /add <группа> | <задача>")
-    elif text == "/quick":
+    elif text in {"/quick", BUTTON_QUICK}:
         await update.message.reply_text("Шаблон: /quick <задача без группы>")
-    elif text == "/done":
+    elif text in {"/done", BUTTON_DONE}:
         await update.message.reply_text("Шаблон: /done <page_id_или_часть_названия>")
-    elif text == "/remind":
+    elif text in {"/remind", BUTTON_REMIND}:
         await update.message.reply_text("Шаблон: /remind <минуты> | <текст>")
-    elif text == "/plan":
+    elif text in {"/plan", BUTTON_PLAN}:
         await update.message.reply_text("Шаблон: /plan [today|tomorrow|YYYY-MM-DD]")
-    elif text == "/ask":
+    elif text in {"/ask", BUTTON_ASK}:
         await update.message.reply_text("Шаблон: /ask <вопрос>")
-    elif text == "Скрыть кнопки":
+    elif text in {"Скрыть кнопки", BUTTON_HIDE}:
         await hide_buttons(update, context)
 
 
@@ -794,7 +870,24 @@ async def chat_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     text = (update.message.text or "").strip()
     if not text:
         return
-    if text in {"/add", "/quick", "/done", "/remind", "/plan", "/ask", "Скрыть кнопки"}:
+    if text in {
+        "/add",
+        "/quick",
+        "/done",
+        "/remind",
+        "/plan",
+        "/ask",
+        "Скрыть кнопки",
+        BUTTON_ADD,
+        BUTTON_QUICK,
+        BUTTON_LIST,
+        BUTTON_GROUPS,
+        BUTTON_DONE,
+        BUTTON_REMIND,
+        BUTTON_PLAN,
+        BUTTON_ASK,
+        BUTTON_HIDE,
+    }:
         await menu_help(update, context)
         return
 
