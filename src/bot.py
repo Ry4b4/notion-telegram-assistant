@@ -600,6 +600,12 @@ async def _execute_intent(update: Update, context: ContextTypes.DEFAULT_TYPE, in
         except (TypeError, ValueError):
             minutes_int = 0
         if minutes_int > 0 and reminder_text:
+            if context.job_queue is None:
+                await update.message.reply_text(
+                    "Напоминания сейчас недоступны: на сервере не настроен JobQueue. "
+                    'Установи зависимости: pip install -r requirements.txt'
+                )
+                return
             context.job_queue.run_once(
                 _send_reminder,
                 when=timedelta(minutes=minutes_int),
@@ -967,6 +973,12 @@ async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Минуты должны быть положительным числом.")
         return
     minutes = int(minutes_raw)
+    if context.job_queue is None:
+        await update.message.reply_text(
+            "Напоминания сейчас недоступны: на сервере не настроен JobQueue. "
+            'Установи зависимости: pip install -r requirements.txt'
+        )
+        return
     context.job_queue.run_once(
         _send_reminder, when=timedelta(minutes=minutes), data={"chat_id": update.effective_chat.id, "text": reminder_text}
     )
@@ -1034,6 +1046,13 @@ async def _evening_checkin(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _post_init(app: Any) -> None:
     app.bot_data.setdefault("subscribed_chats", set())
+    if app.job_queue is None:
+        logger.warning(
+            "JobQueue недоступен (обычно не хватает extra job-queue / pytz). "
+            "Выполни на сервере: pip install -r requirements.txt — "
+            "напоминания и ежедневные чекины отключены, остальные команды работают."
+        )
+        return
     morning_time = _parse_hhmm(MORNING_CHECKIN_TIME)
     evening_time = _parse_hhmm(EVENING_CHECKIN_TIME)
     app.job_queue.run_daily(_morning_checkin, time=morning_time, name="morning_checkin")
@@ -1051,8 +1070,38 @@ def validate_env() -> None:
         raise RuntimeError(f"Missing env vars: {', '.join(missing)}")
 
 
+def log_ollama_connectivity() -> None:
+    """Проверка Ollama при старте: не падаем, только лог (бот без AI всё равно полезен)."""
+    base = OLLAMA_BASE_URL.rstrip("/")
+    wanted = OLLAMA_MODEL.strip()
+    try:
+        response = requests.get(f"{base}/api/tags", timeout=3)
+        response.raise_for_status()
+        data = response.json()
+        model_names = [m.get("name", "") for m in data.get("models", []) if m.get("name")]
+        found = any(name == wanted or name.startswith(wanted + ":") for name in model_names)
+        if found:
+            logger.info("Ollama доступна: %s, модель %s есть в списке.", base, wanted)
+        else:
+            preview = ", ".join(model_names[:8]) or "(нет моделей)"
+            logger.warning(
+                "Ollama отвечает на %s, но модели %r нет среди загруженных. Выполни: ollama pull %s. Сейчас: %s",
+                base,
+                wanted,
+                wanted,
+                preview,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Ollama недоступна по %s (%s). /ask и AI-группировка не будут работать, пока сервис не запущен.",
+            base,
+            exc,
+        )
+
+
 def main() -> None:
     validate_env()
+    log_ollama_connectivity()
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).post_init(_post_init).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("add", add_task))

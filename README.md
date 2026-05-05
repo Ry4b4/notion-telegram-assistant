@@ -31,11 +31,22 @@
 
 ## 3) Запуск
 
-```bash
+**Windows (PowerShell):**
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 copy .env.example .env
+```
+
+**Linux / macOS:**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
 ```
 
 Заполни `.env`, затем:
@@ -44,17 +55,36 @@ copy .env.example .env
 python src/bot.py
 ```
 
+При старте бот пишет в лог, доступна ли Ollama и есть ли выбранная модель в `ollama list`.
+
 ## 4) Бесплатный AI-режим (без платных API)
 
-Используется локальный Ollama:
+Используется локальный Ollama (HTTP API `/api/generate`, см. `_ask_ollama` в `src/bot.py`):
 
-1. Установи [Ollama](https://ollama.com/).
+1. Установи [Ollama](https://ollama.com/) (на Windows/macOS — установщик; на Ubuntu: `curl -fsSL https://ollama.com/install.sh | sh`).
 2. Скачай модель:
    - `ollama pull llama3.1:8b`
-3. Запусти Ollama (обычно он работает как сервис на `http://127.0.0.1:11434`).
-4. Укажи в `.env`:
+3. Убедись, что API слушает `OLLAMA_BASE_URL` (по умолчанию `http://127.0.0.1:11434`). Если Ollama на другой машине — укажи её URL в `.env` (и открой порт в firewall при необходимости).
+4. В `.env`:
    - `OLLAMA_BASE_URL=http://127.0.0.1:11434`
    - `OLLAMA_MODEL=llama3.1:8b`
+
+## 5) Обновление на сервере (Ubuntu)
+
+Из каталога с клоном репозитория:
+
+```bash
+git pull origin master
+source .venv/bin/activate
+pip install -r requirements.txt
+deactivate
+sudo systemctl restart notion-bot
+sudo systemctl status notion-bot
+```
+
+Имя юнита `notion-bot` замени на своё, если настраивал иначе. Логи: `journalctl -u notion-bot -n 100 --no-pager`.
+
+Зависимость `python-telegram-bot[job-queue]` подтягивает `pytz` и `APScheduler` — без этого `JobQueue` не создаётся и бот мог падать при старте напоминаний.
 
 ## Настройка имен колонок
 
